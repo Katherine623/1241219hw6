@@ -12,11 +12,14 @@ python -m venv .venv
 # 2) 安裝相依套件（已釘選避免相依衝突）
 pip install -r requirements.txt
 
-# 3) 下載中央氣象署資料並寫入 SQLite
+# 3) 初始化資料庫（建立 weather/forecasts 表）
+python .\init_db.py
+
+# 4) 下載中央氣象署資料並寫入 SQLite
 #    （可直接使用預設 URL，或自訂環境變數 `CWA_API_URL`）
 python .\fetch_cwa.py
 
-# 4) 啟動應用程式
+# 5) 啟動應用程式
 python -m streamlit run .\streamlit_app.py
 ```
 
@@ -26,6 +29,25 @@ python -m streamlit run .\streamlit_app.py
 - `data.db`：SQLite 資料庫（需包含 `forecasts` 表）。
 - `fetch_cwa.py`：從中央氣象署 OpenData 下載 JSON，解析後寫入 `forecasts` 表。
   - 亦會建立並寫入 `weather` 表（欄位：`id`, `location`, `min_temp`, `max_temp`, `description`）。
+ - `init_db.py`：初始化 `data.db`，建立 `weather` 與 `forecasts` 表。
+## 資料庫結構（SQL）
+```sql
+CREATE TABLE IF NOT EXISTS weather (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  location TEXT,
+  min_temp REAL,
+  max_temp REAL,
+  description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS forecasts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  location TEXT,
+  date TEXT,
+  weather TEXT,
+  max_temp REAL
+);
+```
 
 ## 常見問題
 - 看到 `google-api-core` / `google-auth` 相依衝突：
