@@ -45,8 +45,22 @@ CREATE TABLE IF NOT EXISTS forecasts (
   location TEXT,
   date TEXT,
   weather TEXT,
+  min_temp REAL,
   max_temp REAL
 );
+```
+
+### 快速初始化命令
+在專案根目錄執行以下命令初始化資料庫結構：
+
+```powershell
+python .\init_db.py
+```
+
+若要清除並重新建立資料，也可刪除舊的 `data.db` 後再執行：
+
+```powershell
+Remove-Item -Force .\data.db; python .\init_db.py
 ```
 
 ## 常見問題
@@ -72,3 +86,22 @@ CREATE TABLE IF NOT EXISTS forecasts (
 ## 自訂
 - 若欄位名稱不同，請在 `streamlit_app.py` 中調整 `expected_cols` 與篩選邏輯。
  - 若存在 `weather` 表，應用會優先讀取 `weather`；否則回退使用 `forecasts`。
+
+## 單檔版使用方式
+若需要以單一檔案提交或快速展示，已提供 `onefile_app.py`，可在同一份程式中：初始化資料庫、下載/解析中央氣象局資料、寫入 SQLite、顯示表格。
+
+### 執行步驟（Windows PowerShell）
+```powershell
+# 建議先完成套件安裝（若尚未安裝）
+# python -m venv .venv
+# .\.venv\Scripts\Activate.ps1
+# pip install -r requirements.txt
+
+# 啟動單檔版 Streamlit 應用
+python -m streamlit run .\onefile_app.py
+```
+
+### 說明
+- 左側「更新資料」按鈕會從 CWA F-A0010-001 下載 JSON，解析並寫入 `data.db` 的 `weather/forecasts` 兩張表。
+- 畫面會優先顯示 `weather` 表（欄位：`id, location, min_temp, max_temp, description`）。
+- 若需要自訂 API 連結，可設定環境變數 `CWA_API_URL` 後再按更新。

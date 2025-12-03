@@ -20,6 +20,43 @@ def load_data(db_path: str, table: str) -> pd.DataFrame:
         conn.close()
     return df
 
+@st.cache_data(show_spinner=False)
+def load_with_date(db_path: str) -> pd.DataFrame:
+    """Prefer `weather` but enrich with `date` from `forecasts` if available."""
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table'", conn)
+        names = tables["name"].tolist()
+        has_weather = ALT_TABLE in names
+        has_forecasts = TABLE in names
+        if has_weather and has_forecasts:
+            # Join on location; choose most recent date per location
+            q = (
+                """
+                WITH latest AS (
+                    SELECT location, MAX(date) AS date
+                    FROM forecasts
+                    WHERE date IS NOT NULL AND date <> ''
+                    GROUP BY location
+                )
+                SELECT w.id, w.location, latest.date AS date,
+                       w.min_temp, w.max_temp, w.description
+                FROM weather w
+                LEFT JOIN latest ON latest.location = w.location
+                ORDER BY w.id
+                """
+            )
+            df = pd.read_sql_query(q, conn)
+        elif has_weather:
+            df = pd.read_sql_query("SELECT id, location, NULL as date, min_temp, max_temp, description FROM weather ORDER BY id", conn)
+        elif has_forecasts:
+            df = pd.read_sql_query("SELECT id, location, date, COALESCE(min_temp, NULL) as min_temp, max_temp, weather as description FROM forecasts ORDER BY id", conn)
+        else:
+            df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
+
 # Load data
 try:
     # Prefer new `weather` table if available; fallback to `forecasts`.
@@ -27,17 +64,14 @@ try:
     tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table'", conn)
     conn.close()
     use_table = ALT_TABLE if ALT_TABLE in tables["name"].tolist() else TABLE
-    df = load_data(DB_PATH, use_table)
+    # Load enriched data including date when possible
+    df = load_with_date(DB_PATH)
 except Exception as e:
     st.error(f"載入資料庫失敗: {e}")
     st.stop()
 
-# Basic columns expected based on screenshot: id, location, date, weather, max_temp
-expected_cols = ["id", "location", "date", "weather", "max_temp"]
-# If using weather table, adjust expectations
-if ALT_TABLE in locals():
-    if use_table == ALT_TABLE:
-        expected_cols = ["id", "location", "min_temp", "max_temp", "description"]
+# 基本欄位期望：依實際載入表決定期望欄位
+expected_cols = ["id", "location", "date", "min_temp", "max_temp", "description"]
 missing = [c for c in expected_cols if c not in df.columns]
 if missing:
     st.warning(f"資料表缺少欄位: {missing}")
@@ -59,9 +93,9 @@ if st.sidebar.button("更新資料", use_container_width=True):
     code = fetch_cwa.main() if url is None else fetch_cwa.main()
     if code == 0:
         st.success("資料已更新，重新載入中…")
-        load_data.clear()
+        load_data.clear(); load_with_date.clear()
         try:
-            df = load_data(DB_PATH, TABLE)
+            df = load_with_date(DB_PATH)
         except Exception as e:
             st.error(f"載入資料庫失敗: {e}")
             st.stop()
@@ -93,7 +127,19 @@ if weather_keywords and "weather" in filtered.columns:
 
 # Display
 st.subheader("查詢結果")
-st.dataframe(filtered, use_container_width=True)
+# 美化表格：溫度欄位漸層背景，提高可讀性
+styled = filtered.copy()
+for col in ("min_temp", "max_temp"):
+    if col in styled.columns:
+        # 確保為數值
+        styled[col] = pd.to_numeric(styled[col], errors="coerce")
+try:
+    st.dataframe(
+        styled.style.background_gradient(cmap="RdYlGn_r", subset=[c for c in ["min_temp", "max_temp"] if c in styled.columns]),
+        use_container_width=True,
+    )
+except Exception:
+    st.dataframe(styled, use_container_width=True)
 
 # Simple stats
 col1, col2, col3 = st.columns(3)
@@ -101,9 +147,17 @@ with col1:
     st.metric("筆數", len(filtered))
 with col2:
     if "max_temp" in filtered.columns:
-        st.metric("最高溫(平均)", f"{filtered['max_temp'].astype(float).mean():.1f}")
+        st.metric("最高溫(平均)", f"{pd.to_numeric(filtered['max_temp'], errors='coerce').mean():.1f}")
 with col3:
     if "date" in filtered.columns and filtered["date"].notna().any():
         st.metric("日期範圍", f"{filtered['date'].min().date()} 至 {filtered['date'].max().date()}")
 
-st.caption("資料來源：SQLite `data.db` → 表格 `forecasts`")
+# 視覺化：若有日期，畫出溫度隨時間的變化
+if "date" in filtered.columns and filtered["date"].notna().any():
+    temp_plot = filtered.dropna(subset=["date"]).sort_values("date")
+    if {"date", "min_temp", "max_temp"}.issubset(temp_plot.columns):
+        chart_df = temp_plot[["date", "min_temp", "max_temp"]].copy()
+        chart_df = chart_df.set_index("date")
+        st.line_chart(chart_df, use_container_width=True)
+
+st.caption(f"資料來源：SQLite `{DB_PATH}` → 優先顯示 `weather`（並補齊 `date`）")
