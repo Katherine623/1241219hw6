@@ -25,6 +25,7 @@ python -m streamlit run .\streamlit_app.py
 - `requirements.txt`：相依套件與相容版本。
 - `data.db`：SQLite 資料庫（需包含 `forecasts` 表）。
 - `fetch_cwa.py`：從中央氣象署 OpenData 下載 JSON，解析後寫入 `forecasts` 表。
+  - 亦會建立並寫入 `weather` 表（欄位：`id`, `location`, `min_temp`, `max_temp`, `description`）。
 
 ## 常見問題
 - 看到 `google-api-core` / `google-auth` 相依衝突：
@@ -48,3 +49,4 @@ python -m streamlit run .\streamlit_app.py
 
 ## 自訂
 - 若欄位名稱不同，請在 `streamlit_app.py` 中調整 `expected_cols` 與篩選邏輯。
+ - 若存在 `weather` 表，應用會優先讀取 `weather`；否則回退使用 `forecasts`。

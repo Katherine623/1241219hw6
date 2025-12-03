@@ -1,9 +1,12 @@
 import sqlite3
 import pandas as pd
 import streamlit as st
+import os
+import fetch_cwa
 
 DB_PATH = "data.db"
 TABLE = "forecasts"
+ALT_TABLE = "weather"
 
 st.set_page_config(page_title="Weather Forecasts", layout="wide")
 st.title("天氣預報查詢")
@@ -19,13 +22,22 @@ def load_data(db_path: str, table: str) -> pd.DataFrame:
 
 # Load data
 try:
-    df = load_data(DB_PATH, TABLE)
+    # Prefer new `weather` table if available; fallback to `forecasts`.
+    conn = sqlite3.connect(DB_PATH)
+    tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table'", conn)
+    conn.close()
+    use_table = ALT_TABLE if ALT_TABLE in tables["name"].tolist() else TABLE
+    df = load_data(DB_PATH, use_table)
 except Exception as e:
     st.error(f"載入資料庫失敗: {e}")
     st.stop()
 
 # Basic columns expected based on screenshot: id, location, date, weather, max_temp
 expected_cols = ["id", "location", "date", "weather", "max_temp"]
+# If using weather table, adjust expectations
+if ALT_TABLE in locals():
+    if use_table == ALT_TABLE:
+        expected_cols = ["id", "location", "min_temp", "max_temp", "description"]
 missing = [c for c in expected_cols if c not in df.columns]
 if missing:
     st.warning(f"資料表缺少欄位: {missing}")
@@ -41,6 +53,20 @@ if "date" in df.columns:
 st.sidebar.header("篩選條件")
 locations = sorted(df["location"].dropna().unique()) if "location" in df.columns else []
 selected_locations = st.sidebar.multiselect("地區", locations, default=locations[:1] if locations else [])
+
+if st.sidebar.button("更新資料", use_container_width=True):
+    url = os.getenv("CWA_API_URL", None)
+    code = fetch_cwa.main() if url is None else fetch_cwa.main()
+    if code == 0:
+        st.success("資料已更新，重新載入中…")
+        load_data.clear()
+        try:
+            df = load_data(DB_PATH, TABLE)
+        except Exception as e:
+            st.error(f"載入資料庫失敗: {e}")
+            st.stop()
+    else:
+        st.error("資料更新失敗，請稍後重試或檢查網路/API 設定。")
 
 date_range = None
 if "date" in df.columns and df["date"].notna().any():

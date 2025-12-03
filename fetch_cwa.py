@@ -7,6 +7,7 @@ import requests
 
 DB_PATH = "data.db"
 TABLE = "forecasts"
+WEATHER_TABLE = "weather"
 # Default URL; can be overridden by env `CWA_API_URL`
 DEFAULT_URL = (
     "https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/F-A0010-001"
@@ -14,6 +15,7 @@ DEFAULT_URL = (
 )
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
+    # Existing forecasts table (for backward compatibility)
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE} (
@@ -22,6 +24,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             date TEXT,
             weather TEXT,
             max_temp REAL
+        )
+        """
+    )
+    # New weather table per assignment requirements
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {WEATHER_TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            location TEXT,
+            min_temp REAL,
+            max_temp REAL,
+            description TEXT
         )
         """
     )
@@ -68,6 +82,7 @@ def parse_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 # Weather elements
                 weather_desc = None
                 max_temp = None
+                min_temp = None
                 date_val = None
 
                 # Explore weather elements
@@ -105,10 +120,17 @@ def parse_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                                         max_temp = float(val) if val is not None else max_temp
                                     except (TypeError, ValueError):
                                         pass
+                                if el_name in ("MinT", "min_temp", "MinTemperature"):
+                                    try:
+                                        min_temp = float(val) if val is not None else min_temp
+                                    except (TypeError, ValueError):
+                                        pass
                 # Fallbacks
                 weather_desc = weather_desc or loc.get("weather")
                 if max_temp is None and isinstance(loc.get("max_temp"), (int, float)):
                     max_temp = float(loc["max_temp"])
+                if min_temp is None and isinstance(loc.get("min_temp"), (int, float)):
+                    min_temp = float(loc["min_temp"])
 
                 if name or weather_desc or date_val:
                     items.append(
@@ -117,6 +139,8 @@ def parse_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                             "date": date_val or "",
                             "weather": weather_desc or "",
                             "max_temp": max_temp if max_temp is not None else None,
+                            "min_temp": min_temp if min_temp is not None else None,
+                            "description": weather_desc or "",
                         }
                     )
     except Exception:
@@ -129,6 +153,8 @@ def parse_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                         "date": str(row.get("date", "")),
                         "weather": str(row.get("weather", "")),
                         "max_temp": row.get("max_temp"),
+                        "min_temp": row.get("min_temp"),
+                        "description": row.get("description", ""),
                     }
                 )
     return items
@@ -140,6 +166,7 @@ def upsert_forecasts(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> in
     cur = conn.cursor()
     inserted = 0
     for r in rows:
+        # Insert into legacy forecasts
         cur.execute(
             f"""
             INSERT INTO {TABLE} (location, date, weather, max_temp)
@@ -150,6 +177,19 @@ def upsert_forecasts(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> in
                 r.get("date"),
                 r.get("weather"),
                 r.get("max_temp"),
+            ),
+        )
+        # Insert into new weather table
+        cur.execute(
+            f"""
+            INSERT INTO {WEATHER_TABLE} (location, min_temp, max_temp, description)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                r.get("location"),
+                r.get("min_temp"),
+                r.get("max_temp"),
+                r.get("description"),
             ),
         )
         inserted += 1
