@@ -2,7 +2,11 @@
 description: Implement an approved OpenSpec change and keep tasks in sync.
 ---
 
-$ARGUMENTS
+The user wants to apply the following change. Use the openspec instructions to implement the approved change.
+
+<ChangeId>
+  $ARGUMENTS
+</ChangeId>
 <!-- OPENSPEC:START -->
 **Guardrails**
 - Favor straightforward, minimal implementations first and add complexity only when it is requested or clearly required.

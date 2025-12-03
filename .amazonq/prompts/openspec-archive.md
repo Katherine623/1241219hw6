@@ -2,7 +2,11 @@
 description: Archive a deployed OpenSpec change and update specs.
 ---
 
-$ARGUMENTS
+The user wants to archive the following deployed change. Use the openspec instructions to archive the change and update specs.
+
+<ChangeId>
+  $ARGUMENTS
+</ChangeId>
 <!-- OPENSPEC:START -->
 **Guardrails**
 - Favor straightforward, minimal implementations first and add complexity only when it is requested or clearly required.

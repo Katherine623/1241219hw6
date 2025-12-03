@@ -42,121 +42,158 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 def parse_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    # The exact JSON structure may vary; try to map common fields.
-    # We'll be defensive and look for plausible paths.
+    """Parse CWA F-A0010-001 via cwaopendata.resources.resource.data.
+
+    This dataset often nests arrays under `data`, e.g., `agrWeatherForecasts`,
+    `weatherForecasts`, or provides temperature profiles.
+    We'll search for lists of dicts containing a location name plus fields for
+    weather/temperature and extract MinT/MaxT/Wx when present.
+    """
     items: List[Dict[str, Any]] = []
-    data = payload
-    try:
-        # Some CWA datasets use 'cwaopendata' → 'datasetDescription' / 'resources' / 'resource'
-        # Others directly provide 'records' or similar. We'll probe a few options.
-        if "cwaopendata" in data:
-            data = data["cwaopendata"]
-        # If records present
-        if "records" in data:
-            records = data["records"]
-            # Try common nesting: locations -> location
-            locs = None
-            for key in ("locations", "Location", "location", "data"):
-                if key in records:
-                    locs = records[key]
+    if not isinstance(payload, dict):
+        return items
+    co = payload.get("cwaopendata", {})
+    res = co.get("resources", {}).get("resource", {})
+    data = res.get("data", {})
+
+    def extract_from_list(lst: List[Dict[str, Any]]):
+        for loc in lst:
+            if not isinstance(loc, dict):
+                continue
+            name = loc.get("locationName") or loc.get("location") or loc.get("name") or ""
+            weather_desc = None
+            min_temp = None
+            max_temp = None
+            date_val = loc.get("date") or None
+
+            # Direct fields
+            for k in ("Wx", "weather", "description"):
+                if k in loc and isinstance(loc[k], (str, int, float)):
+                    weather_desc = str(loc[k])
                     break
-            if locs is None:
-                # If records is a list already
-                if isinstance(records, list):
-                    locs = records
-                else:
-                    locs = []
-            # Normalize to list of locations
-            if isinstance(locs, dict) and "location" in locs:
-                loc_list = locs["location"]
-            else:
-                loc_list = locs if isinstance(locs, list) else []
+            for k in ("MinT", "min_temp"):
+                v = loc.get(k)
+                try:
+                    if v is not None:
+                        min_temp = float(v)
+                except (TypeError, ValueError):
+                    pass
+            for k in ("MaxT", "max_temp"):
+                v = loc.get(k)
+                try:
+                    if v is not None:
+                        max_temp = float(v)
+                except (TypeError, ValueError):
+                    pass
 
-            for loc in loc_list:
-                name = (
-                    loc.get("locationName")
-                    or loc.get("name")
-                    or loc.get("location")
-                    or ""
-                )
-                # Weather elements
-                weather_desc = None
-                max_temp = None
-                min_temp = None
-                date_val = None
+            # Nested weatherElement/time format
+            we_list = loc.get("weatherElement") or []
+            if isinstance(we_list, list):
+                for el in we_list:
+                    el_name = el.get("elementName")
+                    times = el.get("time") or []
+                    if not el_name or not isinstance(times, list) or not times:
+                        continue
+                    t0 = times[0]
+                    if isinstance(t0, dict):
+                        date_val = t0.get("startTime") or t0.get("dataTime") or date_val
+                        val = None
+                        ev = t0.get("elementValue")
+                        if isinstance(ev, list) and ev:
+                            val = ev[0].get("value")
+                        elif isinstance(ev, dict):
+                            val = ev.get("value")
+                        elif "value" in t0:
+                            val = t0.get("value")
+                        if el_name == "Wx" and val is not None:
+                            weather_desc = str(val)
+                        elif el_name == "MinT" and val is not None:
+                            try:
+                                min_temp = float(val)
+                            except (TypeError, ValueError):
+                                pass
+                        elif el_name == "MaxT" and val is not None:
+                            try:
+                                max_temp = float(val)
+                            except (TypeError, ValueError):
+                                pass
 
-                # Explore weather elements
-                we_list = loc.get("weatherElement") or loc.get("elements") or []
-                if isinstance(we_list, list):
-                    for el in we_list:
-                        el_name = el.get("elementName") or el.get("name")
-                        times = el.get("time") or el.get("values") or []
-                        if el_name and isinstance(times, list) and times:
-                            # Prefer first time block
-                            t0 = times[0]
-                            if isinstance(t0, dict):
-                                # time dicts often have 'startTime'/'endTime' or 'dataTime'
-                                date_val = (
-                                    t0.get("startTime")
-                                    or t0.get("dataTime")
-                                    or t0.get("time")
-                                    or date_val
-                                )
-                                # Values may be nested
-                                val = None
-                                if "elementValue" in t0:
-                                    ev = t0["elementValue"]
-                                    if isinstance(ev, list) and ev:
-                                        val = ev[0].get("value")
-                                    elif isinstance(ev, dict):
-                                        val = ev.get("value")
-                                elif "value" in t0:
-                                    val = t0.get("value")
+            items.append(
+                {
+                    "location": name,
+                    "date": date_val or "",
+                    "weather": weather_desc or "",
+                    "min_temp": min_temp,
+                    "max_temp": max_temp,
+                    "description": weather_desc or "",
+                }
+            )
 
-                                if el_name in ("Wx", "weather", "Weather"):  # weather description
-                                    weather_desc = str(val) if val is not None else weather_desc
-                                if el_name in ("T", "MaxT", "max_temp", "MaxTemperature"):
-                                    try:
-                                        max_temp = float(val) if val is not None else max_temp
-                                    except (TypeError, ValueError):
-                                        pass
-                                if el_name in ("MinT", "min_temp", "MinTemperature"):
-                                    try:
-                                        min_temp = float(val) if val is not None else min_temp
-                                    except (TypeError, ValueError):
-                                        pass
-                # Fallbacks
-                weather_desc = weather_desc or loc.get("weather")
-                if max_temp is None and isinstance(loc.get("max_temp"), (int, float)):
-                    max_temp = float(loc["max_temp"])
-                if min_temp is None and isinstance(loc.get("min_temp"), (int, float)):
-                    min_temp = float(loc["min_temp"])
+    # Try common arrays under data
+    if isinstance(data, dict):
+        # Precise mapping: agrWeatherForecasts -> weatherForecasts -> location[]
+        agr = data.get("agrWeatherForecasts")
+        if isinstance(agr, dict):
+            wf = agr.get("weatherForecasts")
+            if isinstance(wf, dict):
+                locs = wf.get("location")
+                if isinstance(locs, list):
+                    for loc in locs:
+                        name = loc.get("locationName") or ""
+                        we = loc.get("weatherElements", {})
+                        wx_daily = (we.get("Wx", {}).get("daily") or []) if isinstance(we, dict) else []
+                        max_daily = (we.get("MaxT", {}).get("daily") or []) if isinstance(we, dict) else []
+                        min_daily = (we.get("MinT", {}).get("daily") or []) if isinstance(we, dict) else []
 
-                if name or weather_desc or date_val:
-                    items.append(
-                        {
-                            "location": name or "",
-                            "date": date_val or "",
-                            "weather": weather_desc or "",
-                            "max_temp": max_temp if max_temp is not None else None,
-                            "min_temp": min_temp if min_temp is not None else None,
-                            "description": weather_desc or "",
-                        }
-                    )
-    except Exception:
-        # If structure is unknown, try a very simple heuristic over top-level arrays
-        if isinstance(payload, list):
-            for row in payload:
-                items.append(
-                    {
-                        "location": str(row.get("location", "")),
-                        "date": str(row.get("date", "")),
-                        "weather": str(row.get("weather", "")),
-                        "max_temp": row.get("max_temp"),
-                        "min_temp": row.get("min_temp"),
-                        "description": row.get("description", ""),
-                    }
-                )
+                        # Index by date
+                        def by_date(lst, key):
+                            m = {}
+                            for item in lst:
+                                d = item.get("dataDate")
+                                if d is None:
+                                    continue
+                                m[d] = item.get(key)
+                            return m
+
+                        wx_map = by_date(wx_daily, "weather")
+                        max_map = by_date(max_daily, "temperature")
+                        min_map = by_date(min_daily, "temperature")
+                        # Union of dates
+                        all_dates = set(wx_map.keys()) | set(max_map.keys()) | set(min_map.keys())
+                        for d in sorted(all_dates):
+                            weather_desc = wx_map.get(d)
+                            min_t = min_map.get(d)
+                            max_t = max_map.get(d)
+                            try:
+                                min_t = float(min_t) if min_t is not None else None
+                            except (TypeError, ValueError):
+                                min_t = None
+                            try:
+                                max_t = float(max_t) if max_t is not None else None
+                            except (TypeError, ValueError):
+                                max_t = None
+                            items.append(
+                                {
+                                    "location": name,
+                                    "date": d,
+                                    "weather": weather_desc or "",
+                                    "min_temp": min_t,
+                                    "max_temp": max_t,
+                                    "description": weather_desc or "",
+                                }
+                            )
+        # Fallbacks: generic array scanning
+        if not items:
+            for key in ("weatherForecasts", "weather", "locations", "location"):
+                arr = data.get(key)
+                if isinstance(arr, list) and arr:
+                    extract_from_list(arr)
+                    break
+            if not items:
+                for v in data.values():
+                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                        extract_from_list(v)
+                        break
     return items
 
 def upsert_forecasts(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> int:
