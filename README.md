@@ -23,6 +23,17 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
+## Unified Streamlit Flow
+- Launch the integrated UI (fetch → store → view):
+```powershell
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+- In the app:
+  - Enter the CWB API JSON URL (e.g., F-A0010-001) and click "下載 JSON"
+  - Use defaults `weather.json` and `data.db`, click "解析並存入"
+  - View the `weather` table below
+
 ## Notes
 - The CWB JSON schema may differ; adjust `parse_weather` in `app.py` if needed.
 - Database schema:
