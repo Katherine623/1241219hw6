@@ -70,37 +70,81 @@ def parse_weather(json_path: Path) -> list[dict]:
 	if not json_path.exists():
 		raise FileNotFoundError(f"JSON file not found: {json_path}")
 	data = json.loads(json_path.read_text(encoding="utf-8"))
-	# NOTE: The exact CWB API schema may vary. We extract a reasonable subset.
-	# Expected fields: location name + min/max temperature. Adjust parsing as needed.
+	# NOTE: Handle multiple schema variants. Prefer F-A0010-001 (agrWeatherForecasts) if present.
 	rows: list[dict] = []
 	# Try common CWB format paths
 	# If schema differs, user can modify here.
 	try:
-		records = data.get("records") or {}
-		locations = records.get("location") or []
-		for loc in locations:
-			name = loc.get("locationName")
-			min_temp = None
-			max_temp = None
-			desc = None
+		# Preferred: F-A0010-001 schema under cwaopendata.resources.resource.data.agrWeatherForecasts.weatherForecasts.location
+		cwa = data.get("cwaopendata")
+		if isinstance(cwa, dict):
+			res = cwa.get("resources", {})
+			resource = res.get("resource") or {}
+			ddata = resource.get("data") or {}
+			agr = ddata.get("agrWeatherForecasts") or {}
+			wf = agr.get("weatherForecasts") or {}
+			locations = (wf.get("location") or [])
+			for loc in locations:
+				name = loc.get("locationName") or ""
+				weatherElements = (loc.get("weatherElements") or {})
+				maxT = (weatherElements.get("MaxT") or {}).get("daily") or []
+				minT = (weatherElements.get("MinT") or {}).get("daily") or []
+				Wx = (weatherElements.get("Wx") or {}).get("daily") or []
 
-			weather_elements = loc.get("weatherElement") or []
-			for elem in weather_elements:
-				if elem.get("elementName") in ("MinT", "min_temp"):
-					v = elem.get("time") or elem.get("value")
-					min_temp = extract_first_value(v)
-				if elem.get("elementName") in ("MaxT", "max_temp"):
-					v = elem.get("time") or elem.get("value")
-					max_temp = extract_first_value(v)
+				def temps(lst):
+					vals = []
+					for item in lst:
+						t = item.get("temperature")
+						if t is not None:
+							try:
+								vals.append(float(t))
+							except Exception:
+								pass
+					return vals
 
-			rows.append(
-				{
-					"location": name or "",
-					"min_temp": try_float(min_temp),
-					"max_temp": try_float(max_temp),
-					"description": desc or "",
-				}
-			)
+				min_vals = temps(minT)
+				max_vals = temps(maxT)
+				min_temp = min(min_vals) if min_vals else None
+				max_temp = max(max_vals) if max_vals else None
+				desc = None
+				if Wx:
+					desc = Wx[0].get("weather")
+
+				rows.append(
+					{
+						"location": name,
+						"min_temp": min_temp,
+						"max_temp": max_temp,
+						"description": desc or "",
+					}
+				)
+		else:
+			# Legacy: records/location/weatherElement/MinT/MaxT
+			records = data.get("records") or {}
+			locations = records.get("location") or []
+			for loc in locations:
+				name = loc.get("locationName")
+				min_temp = None
+				max_temp = None
+				desc = None
+
+				weather_elements = loc.get("weatherElement") or []
+				for elem in weather_elements:
+					if elem.get("elementName") in ("MinT", "min_temp"):
+						v = elem.get("time") or elem.get("value")
+						min_temp = extract_first_value(v)
+					if elem.get("elementName") in ("MaxT", "max_temp"):
+						v = elem.get("time") or elem.get("value")
+						max_temp = extract_first_value(v)
+
+				rows.append(
+					{
+						"location": (name or ""),
+						"min_temp": try_float(min_temp),
+						"max_temp": try_float(max_temp),
+						"description": desc or "",
+					}
+				)
 	except Exception:
 		# Fallback: attempt generic parsing if structure is different
 		if isinstance(data, list):
@@ -200,6 +244,29 @@ def store_rows(db_path: Path, rows: list[dict]) -> int:
 		return 7
 
 
+def verify_db(db_path: Path) -> int:
+	"""Verify tables and print a small sample."""
+	try:
+		conn = sqlite3.connect(db_path)
+		cur = conn.cursor()
+		cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+		tables = cur.fetchall()
+		print("TABLES:", tables)
+		cur.execute("SELECT COUNT(*) FROM weather")
+		count = cur.fetchone()[0]
+		print("WEATHER_COUNT:", count)
+		cur.execute("SELECT id, location, min_temp, max_temp, description FROM weather LIMIT 5")
+		sample = cur.fetchall()
+		print("SAMPLE_ROWS:")
+		for row in sample:
+			print(row)
+		conn.close()
+		return 0
+	except Exception as e:
+		print(f"VERIFY_ERROR: {e}", file=sys.stderr)
+		return 10
+
+
 # =====================
 # Streamlit launcher helper
 # =====================
@@ -234,6 +301,10 @@ def build_parser() -> argparse.ArgumentParser:
 	p_store.add_argument("--json", default="weather.json", help="Input JSON file path")
 	p_store.add_argument("--db", default="data.db", help="SQLite database path")
 
+	# verify DB content
+	p_verify = sub.add_parser("verify", help="Verify SQLite DB content")
+	p_verify.add_argument("--db", default="data.db", help="SQLite database path")
+
 	# streamlit hint
 	p_ui = sub.add_parser("serve-info", help="Print Streamlit run instructions")
 	p_ui.add_argument("--db", default="data.db", help="SQLite database path")
@@ -267,7 +338,13 @@ def main(argv: list[str] | None = None) -> int:
 		except Exception as e:
 			print(f"Failed to parse weather JSON: {e}", file=sys.stderr)
 			return 8
-		return store_rows(db_path, rows)
+		code = store_rows(db_path, rows)
+		if code == 0:
+			print(f"STORE_OK: stored {len(rows)} rows into {db_path}")
+		return code
+
+	if args.cmd == "verify":
+		return verify_db(Path(args.db))
 
 	if args.cmd == "serve-info":
 		print_streamlit_instructions(Path(args.db))
