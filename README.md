@@ -1,11 +1,11 @@
-# HW6 Toolkit
+# HW6 Toolkit (Single-file)
 
 ## Features
 - `csv2json`: Convert a CSV file to JSON
 - `fetch`: Download CWB JSON (provide API URL)
 - `store`: Parse JSON and store into SQLite `data.db`
 - `serve-info`: Print Streamlit usage hints
-- Streamlit app `streamlit_app.py` to view SQLite data
+- Streamlit UI now integrated in `app.py` (run with `streamlit run app.py`)
 
 ## Quick Start (PowerShell)
 ```powershell
@@ -18,16 +18,16 @@ python app.py fetch --url "https://example.com/path/to/cwb_api.json" --out weath
 # 3) Parse and store into SQLite
 python app.py store --json weather.json --db data.db
 
-# 4) Install and run Streamlit viewer
+# 4) Install and run Streamlit UI (single-file)
 pip install -r requirements.txt
-streamlit run streamlit_app.py
+streamlit run app.py
 ```
 
-## Unified Streamlit Flow
-- Launch the integrated UI (fetch → store → view):
+## Unified Streamlit Flow (single-file)
+- Launch the integrated UI (fetch → store → view) from `app.py`:
 ```powershell
 pip install -r requirements.txt
-streamlit run streamlit_app.py
+streamlit run app.py
 ```
 - In the app:
   - Enter the CWB API JSON URL (e.g., F-A0010-001) and click "下載 JSON"

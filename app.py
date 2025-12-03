@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import sqlite3
+import os
 
 
 # =====================
@@ -237,6 +238,10 @@ def build_parser() -> argparse.ArgumentParser:
 	p_ui = sub.add_parser("serve-info", help="Print Streamlit run instructions")
 	p_ui.add_argument("--db", default="data.db", help="SQLite database path")
 
+	# streamlit UI from this file
+	p_ui2 = sub.add_parser("ui", help="Run Streamlit UI from this file")
+	p_ui2.add_argument("--db", default="data.db", help="SQLite database path")
+
 	return p
 
 
@@ -268,10 +273,88 @@ def main(argv: list[str] | None = None) -> int:
 		print_streamlit_instructions(Path(args.db))
 		return 0
 
+	if args.cmd == "ui":
+		# Launch Streamlit against this file to use the integrated UI
+		# Prefer 'streamlit run app.py' behavior. If streamlit not installed, instruct the user.
+		try:
+			import streamlit
+		except Exception:
+			print("Error: streamlit not installed. Run 'pip install -r requirements.txt'", file=sys.stderr)
+			return 9
+		# Re-exec via streamlit run for consistent experience
+		# On Windows PowerShell, users typically run: streamlit run app.py
+		# Here we print guidance instead of trying to spawn a nested process.
+		print("Run: streamlit run app.py", file=sys.stderr)
+		return 0
+
 	parser.print_help()
 	return 1
 
 
 if __name__ == "__main__":
-	sys.exit(main())
+	# If executed by Streamlit (`streamlit run app.py`), render UI
+	if os.environ.get("STREAMLIT_SERVER_ENABLED") or os.environ.get("STREAMLIT_RUNTIME"):
+		try:
+			import streamlit as st
+			import pandas as pd
+
+			DB_PATH = Path("data.db")
+			JSON_PATH = Path("weather.json")
+
+			st.set_page_config(page_title="Weather (SQLite)", layout="centered")
+			st.title("Weather Pipeline (Fetch → Store → View)")
+
+			with st.form("fetch_form"):
+				st.subheader("1) 下載中央氣象局 JSON")
+				api_url = st.text_input("API 連結 (F-A0010-001 JSON)", value="")
+				out_file = st.text_input("輸出 JSON 路徑", value=str(JSON_PATH))
+				fetch_submit = st.form_submit_button("下載 JSON")
+				if fetch_submit:
+					if not api_url:
+						st.error("請輸入 API 連結")
+					else:
+						code = fetch_weather_json(api_url, Path(out_file))
+						if code == 0:
+							st.success(f"下載完成：{out_file}")
+						else:
+							st.error("下載失敗，請檢查連結或網路")
+
+			with st.form("store_form"):
+				st.subheader("2) 解析並存入 SQLite3")
+				json_path = st.text_input("JSON 檔案路徑", value=str(JSON_PATH))
+				db_path = st.text_input("SQLite 檔案路徑", value=str(DB_PATH))
+				store_submit = st.form_submit_button("解析並存入")
+				if store_submit:
+					try:
+						rows = parse_weather(Path(json_path))
+						init_db(Path(db_path))
+						code = store_rows(Path(db_path), rows)
+						if code == 0:
+							st.success(f"已存入 {len(rows)} 筆資料 → {db_path}")
+						else:
+							st.error("寫入資料庫失敗")
+					except Exception as e:
+						st.error(f"解析失敗：{e}")
+
+			st.subheader("3) 檢視 SQLite 內容")
+			if not Path(DB_PATH).exists():
+				st.info("尚未建立資料庫，請先執行步驟 2")
+			else:
+				try:
+					conn = sqlite3.connect(DB_PATH)
+					df = pd.read_sql_query(
+						"SELECT id, location, min_temp, max_temp, description FROM weather ORDER BY id DESC",
+						conn,
+					)
+					conn.close()
+					st.dataframe(df, use_container_width=True)
+				except Exception as e:
+					st.error(f"讀取資料庫失敗：{e}")
+
+			st.caption("小提示：也可用 CLI 指令 python app.py fetch/store 來操作")
+		except Exception:
+			# Fallback to CLI main if not under streamlit
+			sys.exit(main())
+	else:
+		sys.exit(main())
 
